@@ -6,6 +6,7 @@ from bluepy.btle import Scanner, DefaultDelegate, ScanEntry
 #from bluepy.btle import *
 import os
 import time
+import datetime
 import struct
 import paho.mqtt.client as mqtt
 import json
@@ -16,7 +17,7 @@ from binascii import unhexlify
 
 BLE_DEVICE=int(os.getenv('BLE_DEVICE',0))
 SCAN_TIME=float(os.getenv('SCAN_TIME',7.0))
-MQTT_HOST=os.getenv('MQTT_HOST','192.168.2.50')
+MQTT_HOST=os.getenv('MQTT_HOST','192.168.0.50')
 MQTT_PORT=int(os.getenv('MQTT_PORT',1883))
 MQTT_TIMEOUT=int(os.getenv('MQTT_TIMEOUT',60))
 MQTT_MAIN_TOPIC=os.getenv('MQTT_MAIN_TOPIC','sensors')
@@ -31,34 +32,112 @@ class ScanDelegate(DefaultDelegate):
         if isNewDev:
 #            print ("Discovered device", dev.addr)
             jsObj = {}
-            if (bool(re.match('58:2D:34',str(dev.addr),re.I))): #This is Xiaomi Clear Glass sensor
-                print(f"Sensor Qingping found at {dev.addr}")
-                raw = dev.getValueText(22)
-#                print ("Service Data - 16-bit value: ",raw)
-                if (raw[0:4] == '95fe' and raw[8:12] == '4703'):
-                    jsObj['DeviceName'] = "Xiaomi CGG1"
-                    jsObj['DeviceAddr'] = str(dev.addr)
-                    if raw[26:28] == '04': #Temp 2 bytes
-                        temp = int(raw[34:36]+raw[32:34],16)/10
-                        print ("Temperature = ", temp) 
+            if (bool(re.match('F5:29:6B',str(dev.addr),re.I))): #This is nRF51 HTS221 sensor
+                print(f"Sensor nRF51 HTS221 found at {dev.addr}")
+                raw = dev.getValueText(255)
+                print ("Manufacturer data - 16-bit value: ",raw)
+                if raw[0:4] == 'ffff':
+                    if raw[4:6] == '2b' or raw[4:6] == '2d':
+                        #raw_str = bytes.fromhex(raw[4:].decode("ascii")).decode("ascii")
+                        raw_str = bytearray.fromhex(raw[4:]).decode()
+                        print ("RAW_STR = ", raw_str)
+                        data_list = raw_str.split()
+                        temp = data_list[0]
+                        hum = data_list[1]
+                        batp = data_list[2]
+                        batv = data_list[3]
+                        mode = data_list[4]
+
+                    if raw[4:6] == 'ee':
+                        temp = int(raw[6:10],16)
+                        if temp & 1 << 15: temp -= 1 << 16
+                        temp = temp / 10
+                        hum = int(raw[10:14],16)
+                        hum = hum / 10
+                        batp = int(raw[14:16],16)
+                        batv = int(raw[16:20],16)
+                        batv = batv / 1000
+                        mode = int(raw[20:22],16)
+
+                    if raw[4:6] == '2b' or raw[4:6] == '2d' or raw[4:6] == 'ee':
+                        jsObj['DeviceName'] = "nRF51 HTS221"
+                        jsObj['DeviceAddr'] = str(dev.addr)
+                        print ("Temperature = ", temp)
                         topic = MQTT_MAIN_TOPIC + '/' + jsObj['DeviceAddr'] + '/' + 'Temperature'
                         jsObj['UserInformation']="Temperature[C]"
-                        jsObj['Value']=round(temp,2)
+                        jsObj['Value']=round(float(temp),1)
                         jsonStr = json.dumps(jsObj)
                         print(jsonStr) 
                         mqttc.publish(topic,jsonStr)                 
-                    if raw[26:28] == '06': #Humidity 2 bytes
-                        humidity = int(raw[34:36]+raw[32:34],16)/10
-                        print ("Humidity = ", humidity)
+                        print ("Humidity = ", hum)
                         topic = MQTT_MAIN_TOPIC + '/' + jsObj['DeviceAddr'] + '/' + 'Humidity'                     
                         jsObj['UserInformation']="Humidity[%]"
-                        jsObj['Value']=round(humidity,2)
+                        jsObj['Value']=round(float(hum),1)
                         jsonStr = json.dumps(jsObj)
                         print(jsonStr) 
-                        mqttc.publish(topic,jsonStr) 
-                    if raw[26:28] == '0d': #Temp + humidity 2 + 2 bytes
-                        temp = int(raw[34:36]+raw[32:34],16)/10
-                        humidity = int(raw[38:40]+raw[36:38],16)/10
+                        mqttc.publish(topic,jsonStr)
+                        print ("Battery % = ", batp)
+                        topic = MQTT_MAIN_TOPIC + '/' + jsObj['DeviceAddr'] + '/' + 'BatteryPercent'                     
+                        jsObj['UserInformation']="Battery[%]"
+                        jsObj['Value']=round(float(batp),0)
+                        jsonStr = json.dumps(jsObj)
+                        print(jsonStr) 
+                        mqttc.publish(topic,jsonStr)
+                        print ("Battery Volts = ", batv)
+                        topic = MQTT_MAIN_TOPIC + '/' + jsObj['DeviceAddr'] + '/' + 'BatteryVolts'                     
+                        jsObj['UserInformation']="Battery[V]"
+                        jsObj['Value']=round(float(batv),3)
+                        jsonStr = json.dumps(jsObj)
+                        print(jsonStr) 
+                        mqttc.publish(topic,jsonStr)
+                        print ("Update Delay (sec) = ", mode)
+                        topic = MQTT_MAIN_TOPIC + '/' + jsObj['DeviceAddr'] + '/' + 'UpdateDelay'                     
+                        jsObj['UserInformation']="UpdateDelay[sec]"
+                        jsObj['Value']=round(float(mode),0)
+                        jsonStr = json.dumps(jsObj)
+                        print(jsonStr) 
+                        mqttc.publish(topic,jsonStr)
+
+            if (bool(re.match('70:87:9E',str(dev.addr),re.I))): #This is Mi SCALE 2
+                print(f"MI SCALE 2 found at {dev.addr}")
+                raw = dev.getValueText(22)
+                print ("Service Data - 16-bit value: ",raw)
+                if raw[4:6] == '22' or raw[4:6] == 'a2': #Stabilized data in kilos
+                    jsObj['DeviceName'] = "Mi Scale 2"
+                    jsObj['DeviceAddr'] = str(dev.addr)
+                    weight = int(raw[8:10]+raw[6:8],16)/200
+                    year = int(raw[12:14]+raw[10:12],16)
+                    month = int(raw[14:16],16)
+                    day = int(raw[16:18],16)
+                    hour24 = int(raw[18:20],16)
+                    minute = int(raw[20:22],16)
+                    second = int(raw[22:24],16)
+                    dt = datetime.datetime(year, month, day, hour24, minute, second).astimezone(datetime.timezone(datetime.timedelta(hours=4)))
+                    dt_str=dt.strftime('%Y/%m/%d %H:%M:%S %z')
+                    print (f"Weight = {weight} at {dt_str}")
+                    topic = MQTT_MAIN_TOPIC + '/' + jsObj['DeviceAddr'] + '/' + 'Weight'
+                    jsObj['UserInformation']="Weight[Kg]"
+                    jsObj['Value']=round(weight,2)
+                    jsonStr = json.dumps(jsObj)
+                    print(jsonStr) 
+                    mqttc.publish(topic,jsonStr)                 
+                    topic = MQTT_MAIN_TOPIC + '/' + jsObj['DeviceAddr'] + '/' + 'WeightDateTime'
+                    jsObj['UserInformation']="WeightDateTime"
+                    jsObj['Value']=f"{dt_str}"
+                    jsonStr = json.dumps(jsObj)
+                    print(jsonStr) 
+                    mqttc.publish(topic,jsonStr)                 
+
+            if (bool(re.match('58:2D:34',str(dev.addr),re.I))): #This is Xiaomi Clear Glass sensor
+                print(f"Sensor Qingping found at {dev.addr}")
+                raw = dev.getValueText(22)
+                print ("Service Data - 16-bit value: ",raw)
+                if raw[0:4] == 'cdfd':
+                    jsObj['DeviceName'] = "Xiaomi CGG1"
+                    jsObj['DeviceAddr'] = str(dev.addr)
+                    if raw[22:24] == '04': #Temp + humidity 2 + 2 bytes
+                        temp = int(raw[26:28]+raw[24:26],16)/10
+                        humidity = int(raw[30:32]+raw[28:30],16)/10
                         print ("Temperature = ", temp)
                         topic = MQTT_MAIN_TOPIC + '/' + jsObj['DeviceAddr'] + '/' + 'Temperature'
                         jsObj['UserInformation']="Temperature[C]"
@@ -73,8 +152,8 @@ class ScanDelegate(DefaultDelegate):
                         jsonStr = json.dumps(jsObj)
                         print(jsonStr) 
                         mqttc.publish(topic,jsonStr)
-                    if raw[26:28] == '0a': #battery 1 byte
-                        battery = int(raw[32:36],16)
+                    if raw[32:34] == '02': #battery 1 byte
+                        battery = int(raw[36:38],16)
                         print ("Battery % = ", battery)
                         topic = MQTT_MAIN_TOPIC + '/' + jsObj['DeviceAddr'] + '/' + 'Battery'  
                         jsObj['UserInformation']="Battery Level"
@@ -83,6 +162,7 @@ class ScanDelegate(DefaultDelegate):
                         jsonStr = json.dumps(jsObj)
                         print(jsonStr) 
                         mqttc.publish(topic,jsonStr)                                          
+
             if (bool(re.match('C4:4F:33:05:FD:DB',str(dev.addr),re.I))):   #This is ESP_SENSOR
                 dev_name_tmp = dev.getValueText(9)
                 if dev_name_tmp:
